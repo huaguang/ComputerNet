@@ -26,7 +26,7 @@ public class TraceRouter implements Runnable{
 			System.exit(1);
 		}
 		//获取网卡设备实例
-		captor=JpcapCaptor.openDevice(nis[nisIndex],2000,true,8000);//(intrface, snaplen, promisc, to_ms)(nis[i]);
+		captor=JpcapCaptor.openDevice(nis[nisIndex],2000,true,1000);//(intrface, snaplen, promisc, to_ms)(nis[i]);
 		for(NetworkInterfaceAddress addr:nis[nisIndex].addresses){
 			if(addr.address instanceof Inet4Address){
 				localAddr=addr.address;
@@ -57,7 +57,7 @@ public class TraceRouter implements Runnable{
 
 		return 2;
 		
-			}
+	}
 	
 	//获取目标主机MAC地址。
 	public boolean setRemoteMac()
@@ -114,16 +114,16 @@ public class TraceRouter implements Runnable{
 	{
 		this.icmp=new ICMPPacket();
 		icmp.type = ICMPPacket.ICMP_ECHO;	//ICMP类别码,请求回显
-		icmp.seq = 100;
 		icmp.id = 0;//Identifier.
-		//
-		icmp.setIPv4Parameter(0, false, false, false, 0, false, false, false, 0, 0, 0, IPPacket.IPPROTO_ICMP, localAddr,remoteAddr);
+		icmp.setIPv4Parameter(0, false, false, false, 0, false, false, false, 231, 0, 0, IPPacket.IPPROTO_ICMP, localAddr,remoteAddr);
 		icmp.data = "data".getBytes();
 		EthernetPacket ether = new EthernetPacket();
 		ether.frametype = EthernetPacket.ETHERTYPE_IP;
 		ether.src_mac = this.localMac;
 		ether.dst_mac = this.remoteMac;
 		icmp.datalink = ether;
+		icmp.id=(short) 1;
+		icmp.seq=16;
 		try {
 			//设置抓包过滤器，只抓类型为ICMP，目的地址为本机的包。
 			captor.setFilter("icmp and dst host " + localAddr.getHostAddress(), true);
@@ -150,27 +150,33 @@ public class TraceRouter implements Runnable{
 		String ip=null;
 		//boolean unreach=false;	//收到不可达包
 		boolean reply=false;	//收到回复包。
-		int nullAll=0;			//三个包都没有抓到。
+		int nullAll=0;			//记录抓空包数。
 		for(int i=0;i<3;i++)
 		{
 			//抓包并分析。
 			/*dispatchPacket	@Deprecated
 			public int dispatchPacket(int count,PacketReceiver handler)*/
 			p = (ICMPPacket) captor.getPacket();
-			if (p == null) {	//超时，未捕获到。
+			if (p == null) {	//超时，未捕获到，空包。
 				str+="*\t";
 				nullAll++;
-			} else if (p.type == ICMPPacket.ICMP_TIMXCEED) {	//正常捕获，为ttl到0后被抛弃的返回信息的包。
-				str+=String.valueOf(p.sec*1000+p.usec/1000-second*1000-millSecond)+"ms\t";
-				ip=p.src_ip.getHostAddress();
-			} else if (p.type == ICMPPacket.ICMP_UNREACH) {		//不可达
-				str+=String.valueOf(p.sec*1000+p.usec/1000-second*1000-millSecond)+"ms\t";
-			//	unreach=true;
-				ip=p.src_ip.getHostAddress();
-			} else if (p.type == ICMPPacket.ICMP_ECHOREPLY) {	//回复包。
+			}else if ((p.type == ICMPPacket.ICMP_ECHOREPLY)&&(new String(p.data,0,p.data.length)).equals("data")) {	//回复包，会带有发送包的数据"data"
 				str+=String.valueOf(p.sec*1000+p.usec/1000-second*1000-millSecond)+"ms\t";
 				ip=p.src_ip.getHostAddress();
 				reply=true;
+			} else if((p.data[24]!=0)||(p.data[25]!=1)||(p.data[26]!=0)||(p.data[27]!=16)){	//判断是否为本程序需要接收的包。前两个为id,后两个字节为seq.
+				i--;
+				System.out.println("不是本程序发出的包");
+				continue;
+			}
+			else if((p.type == ICMPPacket.ICMP_TIMXCEED)&&((p.data[24]==0)&&(p.data[25]==1)&&(p.data[26]==0)&&(p.data[27]==16))) {	//正常捕获，为ttl到0后被抛弃的返回信息的包。
+				str+=String.valueOf(p.sec*1000+p.usec/1000-second*1000-millSecond)+"ms\t";
+				ip=p.src_ip.getHostAddress();
+				//System.out.println("超时"+ttl+(p.sec*1000+p.usec/1000-second*1000-millSecond));
+			}else if (p.type == ICMPPacket.ICMP_UNREACH) {		//不可达
+				str+=String.valueOf(p.sec*1000+p.usec/1000-second*1000-millSecond)+"ms不可达\t";
+			//	unreach=true;
+				ip=p.src_ip.getHostAddress();
 			} else {
 				//str="wrong";
 				//意外情况，暂不考虑
@@ -179,7 +185,7 @@ public class TraceRouter implements Runnable{
 			}
 		}
 		if(nullAll==3){
-			str=ttl+"\t"+str+"\t"+"请求超时";
+			str=ttl+"\t"+str+"请求超时";
 		}else{
 			str=ttl+"\t"+str+ip;
 		}
